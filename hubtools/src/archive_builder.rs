@@ -4,8 +4,8 @@
 
 use crate::header;
 use crate::Error;
-use crate::RawHubrisImage;
 use crate::CABOOSE_MAGIC;
+use crate::{RawHubrisImage, TargetArch};
 use std::io;
 use std::io::Write;
 use zip::ZipWriter;
@@ -33,7 +33,7 @@ impl HubrisArchiveBuilder {
     /// Construct a fake `RawHubrisImage` that is not valid, but _appears_ to be
     /// valid: it contains the correct magic numbers at the correct offsets to
     /// look like a hubris image and contain a caboose.
-    pub fn with_fake_image() -> Self {
+    pub fn with_fake_image(arch: TargetArch) -> Self {
         const FAKE_IMAGE_SIZE: usize = 1024;
         const FAKE_CABOOSE_SIZE: usize = 256;
 
@@ -64,7 +64,7 @@ impl HubrisArchiveBuilder {
             .unwrap();
 
         let image =
-            RawHubrisImage::from_binary(data.into_inner(), 0, 0).unwrap();
+            RawHubrisImage::from_binary(data.into_inner(), 0, 0, arch).unwrap();
 
         // Ensure our caboose staging above was correct.
         assert_eq!(
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn built_archives_are_loadable() {
-        let builder = HubrisArchiveBuilder::with_fake_image();
+        let builder = HubrisArchiveBuilder::with_fake_image(TargetArch::ARM);
         let archive = builder.build_to_vec().unwrap();
 
         let loaded = RawHubrisArchive::from_vec(archive).unwrap();
@@ -139,7 +139,8 @@ mod tests {
 
     #[test]
     fn written_caboose_values_are_loadable() {
-        let mut builder = HubrisArchiveBuilder::with_fake_image();
+        let mut builder =
+            HubrisArchiveBuilder::with_fake_image(TargetArch::RISCV);
         builder
             .write_caboose(
                 CabooseBuilder::default()

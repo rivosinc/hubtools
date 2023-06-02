@@ -1,6 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
+use ihex::Record;
 use object::{Object, ObjectSection};
 use path_slash::PathBufExt;
 use thiserror::Error;
@@ -17,11 +18,18 @@ mod caboose;
 
 pub use caboose::{Caboose, CabooseError};
 
+#[derive(Copy, Clone, Debug)]
+pub enum TargetArch {
+    ARM,
+    RISCV,
+}
+
 #[derive(Debug)]
 pub struct RawHubrisImage {
     pub start_addr: u32,
     pub data: Vec<u8>,
     pub kentry: u32,
+    pub arch_machine: TargetArch,
 }
 
 impl RawHubrisImage {
@@ -29,6 +37,7 @@ impl RawHubrisImage {
         data: &BTreeMap<u32, Vec<u8>>,
         kentry: u32,
         gap_fill: u8,
+        arch_machine: TargetArch,
     ) -> Result<Self, Error> {
         let mut prev: Option<u32> = None;
         let mut out = vec![];
@@ -47,6 +56,7 @@ impl RawHubrisImage {
             start_addr,
             data: out,
             kentry,
+            arch_machine,
         })
     }
 
@@ -54,10 +64,11 @@ impl RawHubrisImage {
         data: Vec<u8>,
         start_addr: u32,
         kentry: u32,
+        arch_machine: TargetArch,
     ) -> Result<Self, Error> {
         let mut segments = BTreeMap::new();
         segments.insert(start_addr, data);
-        Self::from_segments(&segments, kentry, 0xFF)
+        Self::from_segments(&segments, kentry, 0xFF, arch_machine)
     }
 
     pub fn from_elf(elf_data: &[u8]) -> Result<Self, Error> {
@@ -65,6 +76,12 @@ impl RawHubrisImage {
         if elf.format() != object::BinaryFormat::Elf {
             return Err(Error::NotAnElf(elf.format()));
         }
+
+        let arch_machine = match elf.architecture() {
+           object::Architecture::Arm => TargetArch::ARM,
+           object::Architecture::Riscv32 => TargetArch::RISCV,
+           _ => panic!("Unsupported architecture")
+        };
 
         let mut segments: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
         let code_flags = object::SectionFlags::Elf {
@@ -78,7 +95,7 @@ impl RawHubrisImage {
                 );
             }
         }
-        Self::from_segments(&segments, elf.entry().try_into().unwrap(), 0xFF)
+        Self::from_segments(&segments, elf.entry().try_into().unwrap(), 0xFF, arch_machine)
     }
 
     /// Converts the raw image to an ELF file
@@ -96,13 +113,18 @@ impl RawHubrisImage {
         // `object/src/write/elf/object.rs:elf_write`, but this is dramatically
         // simpler: we're writing a single section with no relocations, symbols,
         // or other fanciness (other than .shstrtab)
+        let (e_machine, os_abi) = match self.arch_machine {
+            TargetArch::ARM => (object::elf::EM_ARM, object::elf::ELFOSABI_ARM),
+            TargetArch::RISCV => (object::elf::EM_RISCV, object::elf::ELFOSABI_NONE),
+        };
+
         let header = object::write::elf::FileHeader {
             abi_version: 0,
             e_entry: self.kentry as u64,
             e_flags: 0,
-            e_machine: object::elf::EM_ARM,
+            e_machine,
             e_type: object::elf::ET_REL,
-            os_abi: object::elf::ELFOSABI_ARM,
+            os_abi,
         };
         w.reserve_file_header();
         w.reserve_program_headers(1);
@@ -163,6 +185,28 @@ impl RawHubrisImage {
         Ok(self.data.clone())
     }
 
+    /// Converts to a intel hex format
+    pub fn to_ihex(&self) -> Result<String, Error> {
+        let mut records = vec![];
+        let segment = self.data.as_slice();
+
+        for (bc_idx, big_chunk) in segment.chunks(1<<16).enumerate() {
+            let addr = (self.start_addr >> 16) + bc_idx as u32;
+            records.push(Record::ExtendedLinearAddress(addr as u16));
+            for (i, chunk) in big_chunk.chunks(16).enumerate() {
+                records.push(Record::Data {
+                    offset: i as u16 * 16,
+                    value: chunk.to_vec(),
+                });
+            }
+        }
+        records.push(Record::EndOfFile);
+
+        let ihex = ihex::create_object_file_representation(&records).unwrap();
+
+        Ok(ihex)
+    }
+
     /// Convert SREC to other formats for convenience.
     pub fn write_all(&self, dist_dir: &Path, name: &str) -> Result<(), Error> {
         let elf = self.to_elf()?;
@@ -173,6 +217,11 @@ impl RawHubrisImage {
         let bin_file = dist_dir.join(format!("{name}.bin"));
         std::fs::write(&bin_file, &self.data)
             .map_err(|e| Error::FileWriteFailed(bin_file, e))?;
+
+        let ihex = self.to_ihex()?;
+        let ihex_file = dist_dir.join(format!("{name}.ihex"));
+        std::fs::write(&ihex_file, ihex)
+            .map_err(|e| Error::FileWriteFailed(ihex_file, e))?;
         Ok(())
     }
 
@@ -342,6 +391,9 @@ pub enum Error {
 
     #[error("cannot overwrite an in-memory archive")]
     CannotOverwriteInMemoryArchive,
+
+    #[error("wrong Architecture")]
+    WrongArch,
 }
 
 ////////////////////////////////////////////////////////////////////////////////

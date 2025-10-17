@@ -24,6 +24,18 @@ pub enum TargetArch {
     RISCV,
 }
 
+impl TargetArch {
+    pub fn from_target(target: &str) -> Option<Self> {
+        if target.starts_with("thumb") {
+            Some(TargetArch::ARM)
+        } else if target.starts_with("riscv") {
+            Some(TargetArch::RISCV)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RawHubrisImage {
     pub start_addr: u32,

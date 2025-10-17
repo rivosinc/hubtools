@@ -24,6 +24,18 @@ pub enum TargetArch {
     RISCV,
 }
 
+impl TargetArch {
+    pub fn from_target(target: &str) -> Option<Self> {
+        if target.starts_with("thumb") {
+            Some(TargetArch::ARM)
+        } else if target.starts_with("riscv") {
+            Some(TargetArch::RISCV)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RawHubrisImage {
     pub start_addr: u32,
@@ -78,9 +90,9 @@ impl RawHubrisImage {
         }
 
         let arch_machine = match elf.architecture() {
-           object::Architecture::Arm => TargetArch::ARM,
-           object::Architecture::Riscv32 => TargetArch::RISCV,
-           _ => panic!("Unsupported architecture")
+            object::Architecture::Arm => TargetArch::ARM,
+            object::Architecture::Riscv32 => TargetArch::RISCV,
+            _ => panic!("Unsupported architecture"),
         };
 
         let mut segments: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
@@ -95,7 +107,12 @@ impl RawHubrisImage {
                 );
             }
         }
-        Self::from_segments(&segments, elf.entry().try_into().unwrap(), 0xFF, arch_machine)
+        Self::from_segments(
+            &segments,
+            elf.entry().try_into().unwrap(),
+            0xFF,
+            arch_machine,
+        )
     }
 
     /// Converts the raw image to an ELF file
@@ -115,7 +132,9 @@ impl RawHubrisImage {
         // or other fanciness (other than .shstrtab)
         let (e_machine, os_abi) = match self.arch_machine {
             TargetArch::ARM => (object::elf::EM_ARM, object::elf::ELFOSABI_ARM),
-            TargetArch::RISCV => (object::elf::EM_RISCV, object::elf::ELFOSABI_NONE),
+            TargetArch::RISCV => {
+                (object::elf::EM_RISCV, object::elf::ELFOSABI_NONE)
+            }
         };
 
         let header = object::write::elf::FileHeader {
@@ -190,7 +209,7 @@ impl RawHubrisImage {
         let mut records = vec![];
         let segment = self.data.as_slice();
 
-        for (bc_idx, big_chunk) in segment.chunks(1<<16).enumerate() {
+        for (bc_idx, big_chunk) in segment.chunks(1 << 16).enumerate() {
             let addr = (self.start_addr >> 16) + bc_idx as u32;
             records.push(Record::ExtendedLinearAddress(addr as u16));
             for (i, chunk) in big_chunk.chunks(16).enumerate() {
